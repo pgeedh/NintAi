@@ -1,1 +1,1 @@
-# BikeFit-Trithalon
+# BikeFit
