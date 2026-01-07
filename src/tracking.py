@@ -1,14 +1,11 @@
 from ultralytics import YOLO
 import cv2
+import numpy as np
 
 class PoseDetector:
     def __init__(self, model_path='yolo11n-pose.pt'):
         """
         Initializes the YOLO11 Pose model.
-        Args:
-            model_path (str): Path to the YOLO11 pose model. 
-                              Defaults to 'yolo11n-pose.pt' (Nano) for speed.
-                              Requires 'pip install ultralytics'
         """
         self.model = YOLO(model_path)
 
@@ -21,10 +18,7 @@ class PoseDetector:
 
     def get_landmarks_dict(self, results, image_shape):
         """
-        Extracts keypoints and normalizes them into a dictionary format compatible with NintAi's core.
-        YOLOv8/11 COCO Keypoints:
-        0: Nose, 1: Eye, ..., 5: Shoulder, 7: Elbow, 9: Wrist, 11: Hip, 13: Knee, 15: Ankle
-        (Left side odd, Right side even... logic handles mainly left side fit for now)
+        Extracts ALL COCO keypoints (0-16) and maps them to named keys (left_*, right_*).
         """
         h, w = image_shape[:2]
         lm_dict = {}
@@ -32,30 +26,26 @@ class PoseDetector:
         if results.keypoints is None or len(results.keypoints) == 0:
             return lm_dict
 
-        # Assuming single person - take the FIRST detection
-        # data format: [x, y, conf]
+        # Take first person
         kpts = results.keypoints.data[0].cpu().numpy()
         
-        # Mapping COCO keypoint indices to NintAi names
-        # Assuming cyclist is facing left (showing left side) -> using odd indices
-        # If confidence is low, could check right side? For now strict left logic.
+        # COCO Mapping
+        # 0: Nose, 1: L-Eye, 2: R-Eye, 3: L-Ear, 4: R-Ear
+        # 5: L-Shoulder, 6: R-Shoulder, 7: L-Elbow, 8: R-Elbow
+        # 9: L-Wrist, 10: R-Wrist, 11: L-Hip, 12: R-Hip
+        # 13: L-Knee, 14: R-Knee, 15: L-Ankle, 16: R-Ankle
         
         mapping = {
-            5: 'shoulder',  # Left Shoulder
-            7: 'elbow',     # Left Elbow
-            9: 'wrist',     # Left Wrist
-            11: 'hip',      # Left Hip
-            13: 'knee',     # Left Knee
-            15: 'ankle'     # Left Ankle
+            0: 'nose',
+            1: 'left_eye', 2: 'right_eye',
+            3: 'left_ear', 4: 'right_ear',
+            5: 'left_shoulder', 6: 'right_shoulder',
+            7: 'left_elbow', 8: 'right_elbow',
+            9: 'left_wrist', 10: 'right_wrist',
+            11: 'left_hip', 12: 'right_hip',
+            13: 'left_knee', 14: 'right_knee',
+            15: 'left_ankle', 16: 'right_ankle'
         }
-        
-        # Heuristic for 'foot':
-        # YOLO doesn't have a 'toe' or 'metatarsal' point. 
-        # We can approximate 'foot' by extending line from knee->ankle? 
-        # Or just use Ankle for now.
-        # NintAi core uses 'foot' for ankling. 
-        # Let's map 'foot' to 'ankle' (index 15) for safety so it doesn't crash, 
-        # but ankling logic will be 0.
         
         for idx, name in mapping.items():
             if idx < len(kpts):
@@ -63,8 +53,14 @@ class PoseDetector:
                 if conf > 0.3: # Threshold
                     lm_dict[name] = [x, y]
         
-        # Add 'foot' as ankle copy if ankle exists
-        if 'ankle' in lm_dict:
-            lm_dict['foot'] = lm_dict['ankle']
+        # Backward compatibility for 'simple' names (default to Left for now, but analysis should pick side)
+        # Actually, let's NOT default to left here to avoid confusion. 
+        # The analyzer should map 'knee' -> 'left_knee' or 'right_knee' based on detection.
+        # But to keep existing code (core.py) running without crash, we might map detected side?
+        # Let's map strict Left for legacy parts IF they exist.
+        for simple in ['shoulder', 'elbow', 'wrist', 'hip', 'knee', 'ankle']:
+            left_key = f"left_{simple}"
+            if left_key in lm_dict:
+                lm_dict[simple] = lm_dict[left_key]
 
         return lm_dict

@@ -1,112 +1,145 @@
 import numpy as np
+import cv2
+import math
 
-# --- Calibration Logic ---
-class BikeCalibrator:
-    def __init__(self):
-        self.px_per_cm = None
+class OneEuroFilter:
+    def __init__(self, t0, x0, min_cutoff=1.0, beta=0.007, d_cutoff=1.0):
+        self.t_prev = t0
+        self.x_prev = np.array(x0, dtype=float)
+        self.dx_prev = np.zeros_like(x0, dtype=float)
+        self.min_cutoff = min_cutoff
+        self.beta = beta
+        self.d_cutoff = d_cutoff
+        self.alpha = self._alpha(min_cutoff)
 
-    def calibrate(self, point_a, point_b, known_distance_cm):
-        """
-        Calibrates the scale based on two points and a real-world distance.
-        """
-        dist_px = np.linalg.norm(np.array(point_a) - np.array(point_b))
-        if dist_px == 0:
-            raise ValueError("Calibration points are identical.")
-        self.px_per_cm = dist_px / known_distance_cm
-        return self.px_per_cm
+    def _alpha(self, cutoff):
+        tau = 1.0 / (2 * np.pi * cutoff)
+        return 1.0 / (1.0 + tau * 30.0)
 
-    def px_to_cm(self, pixels):
-        if self.px_per_cm is None:
-            return 0 # Or raise error
-        return pixels / self.px_per_cm
-
-# --- Geometry & Analysis ---
+    def __call__(self, t, x):
+        t_e = t - self.t_prev
+        a_d = self._alpha(self.d_cutoff)
+        dx = (x - self.x_prev) / t_e if t_e > 0 else np.zeros_like(x)
+        dx_hat = a_d * dx + (1 - a_d) * self.dx_prev
+        cutoff = self.min_cutoff + self.beta * np.abs(dx_hat)
+        a = self._alpha(cutoff)
+        x_hat = a * x + (1 - a) * self.x_prev
+        self.x_prev = x_hat
+        self.dx_prev = dx_hat
+        self.t_prev = t
+        return x_hat
 
 def calculate_angle(a, b, c):
-    """
-    Calculates the angle between three points a, b, and c (where b is the vertex).
-    Points should be (x, y) tuples or lists.
-    Returns the angle in degrees.
-    """
-    a = np.array(a)
-    b = np.array(b)
-    c = np.array(c)
-
+    a, b, c = np.array(a), np.array(b), np.array(c)
     radians = np.arctan2(c[1] - b[1], c[0] - b[0]) - np.arctan2(a[1] - b[1], a[0] - b[0])
     angle = np.abs(radians * 180.0 / np.pi)
-
-    if angle > 180.0:
-        angle = 360 - angle
-
+    if angle > 180.0: angle = 360 - angle
     return angle
 
-def analyze_posture(landmarks_dict):
-    """
-    Calculates key angles for bike fitting from the landmarks dictionary.
-    Returns a dictionary of angles.
-    """
+def calculate_angle_horizontal(a, b):
+    v = np.array(b) - np.array(a)
+    return np.abs(np.degrees(np.arctan2(v[1], v[0])))
+
+def draw_angle_arc(image, p1, p2, p3, angle, color=(0, 255, 255), radius=30):
+    if p1 == (0,0) or p2 == (0,0) or p3 == (0,0): return
+    v1 = np.array(p1) - np.array(p2)
+    v2 = np.array(p3) - np.array(p2)
+    ang1 = np.degrees(np.arctan2(v1[1], v1[0]))
+    ang2 = np.degrees(np.arctan2(v2[1], v2[0]))
+    if ang1 < 0: ang1 += 360
+    if ang2 < 0: ang2 += 360
+    diff = ang2 - ang1
+    if diff < 0: diff += 360
+    if diff > 180:
+        start, end = ang2, ang1
+    else:
+        start, end = ang1, ang2
+    cv2.ellipse(image, p2, (radius, radius), 0, start, end, color, 2, cv2.LINE_AA)
+    text_x = int(p2[0] + radius * 1.5 * np.cos(np.radians((start+end)/2)))
+    text_y = int(p2[1] + radius * 1.5 * np.sin(np.radians((start+end)/2)))
+    cv2.putText(image, f"{int(angle)}", (text_x-10, text_y+5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+
+def detect_side(lm_dict):
+    nose = lm_dict.get('nose')
+    l_ear = lm_dict.get('left_ear')
+    r_ear = lm_dict.get('right_ear')
+    
+    if nose is not None and l_ear is not None:
+        if nose[0] < l_ear[0]: return 'left'
+        else: return 'right'
+    if nose is not None and r_ear is not None:
+        if nose[0] < r_ear[0]: return 'left'
+        else: return 'right'
+        
+    l_hip = lm_dict.get('left_hip')
+    l_knee = lm_dict.get('left_knee')
+    if l_hip is not None and l_knee is not None:
+        if l_knee[0] < l_hip[0]: return 'left'
+        else: return 'right'
+        
+    return 'left'
+
+def get_primary_landmarks(lm_dict, facing_side):
+    left_keys = ['left_shoulder', 'left_hip', 'left_knee', 'left_ankle', 'left_heel', 'left_toe']
+    right_keys = ['right_shoulder', 'right_hip', 'right_knee', 'right_ankle', 'right_heel', 'right_toe']
+    
+    l_count = sum(1 for k in left_keys if k in lm_dict)
+    r_count = sum(1 for k in right_keys if k in lm_dict)
+    
+    prefix = 'left_' if l_count >= r_count else 'right_'
+    
+    unified = {}
+    for k, v in lm_dict.items():
+        if k.startswith(prefix):
+            unified[k.replace(prefix, '')] = v
+        unified[k] = v 
+    unified['side'] = prefix.replace('_', '')
+    return unified
+
+def analyze_posture(lm):
     angles = {}
+    def valid(pt): return pt is not None and not (pt[0] == 0 and pt[1] == 0)
+
+    if valid(lm.get('hip')) and valid(lm.get('knee')) and valid(lm.get('ankle')):
+        angles['knee'] = calculate_angle(lm['hip'], lm['knee'], lm['ankle'])
+    else: angles['knee'] = 0
+
+    if valid(lm.get('shoulder')) and valid(lm.get('hip')) and valid(lm.get('knee')):
+        angles['hip'] = calculate_angle(lm['shoulder'], lm['hip'], lm['knee'])
+    else: angles['hip'] = 0
     
-    # Check if we have valid points (not [0,0] which YOLO might return for missing)
-    def valid(pt):
-        return not (pt[0] == 0 and pt[1] == 0)
-
-    if valid(landmarks_dict['hip']) and valid(landmarks_dict['knee']) and valid(landmarks_dict['ankle']):
-        angles['knee'] = calculate_angle(landmarks_dict['hip'], landmarks_dict['knee'], landmarks_dict['ankle'])
-    else:
-        angles['knee'] = 0
-
-    if valid(landmarks_dict['shoulder']) and valid(landmarks_dict['hip']) and valid(landmarks_dict['knee']):
-        angles['hip'] = calculate_angle(landmarks_dict['shoulder'], landmarks_dict['hip'], landmarks_dict['knee'])
-    else:
-        angles['hip'] = 0
+    if valid(lm.get('shoulder')) and valid(lm.get('hip')):
+        angles['back'] = calculate_angle_horizontal(lm['hip'], lm['shoulder'])
+    else: angles['back'] = 0
     
-    if valid(landmarks_dict['shoulder']) and valid(landmarks_dict['elbow']) and valid(landmarks_dict['wrist']):
-        angles['elbow'] = calculate_angle(landmarks_dict['shoulder'], landmarks_dict['elbow'], landmarks_dict['wrist'])
-    else:
-        angles['elbow'] = 0
-
-    # Ankling Range (Knee - Ankle - Foot)
-    # Note: YOLO might not give foot, so check existence
-    if 'foot' in landmarks_dict and valid(landmarks_dict['foot']) and valid(landmarks_dict['knee']) and valid(landmarks_dict['ankle']):
-        angles['ankle'] = calculate_angle(landmarks_dict['knee'], landmarks_dict['ankle'], landmarks_dict['foot'])
-    else:
-        angles['ankle'] = 0
+    if valid(lm.get('elbow')) and valid(lm.get('shoulder')) and valid(lm.get('hip')):
+        angles['arm_torso'] = calculate_angle(lm['elbow'], lm['shoulder'], lm['hip'])
+    else: angles['arm_torso'] = 0
+    
+    ear_pt = None
+    if 'ear' in lm: ear_pt = lm['ear']
+    elif 'side' in lm:
+        ear_pt = lm.get(f"{lm['side']}_ear")
+        
+    if valid(ear_pt) and valid(lm.get('shoulder')) and valid(lm.get('hip')):
+        angles['neck'] = calculate_angle(lm['hip'], lm['shoulder'], ear_pt)
+    else: angles['neck'] = 0
+    
+    if valid(lm.get('elbow')) and valid(lm.get('wrist')):
+        angles['wrist_tilt'] = calculate_angle_horizontal(lm['elbow'], lm['wrist'])
+    else: angles['wrist_tilt'] = 0
+    
+    # Real Foot Angle (Heel-Toe vs Horizontal)
+    # 0 deg = flat. + deg = toe up?
+    if valid(lm.get('heel')) and valid(lm.get('toe')):
+        angles['foot_angle'] = calculate_angle_horizontal(lm['heel'], lm['toe'])
+    else: angles['foot_angle'] = 0
 
     return angles
 
-def get_feedback(knee_angle, elbow_angle):
-    """
-    Generates feedback and adjustment recommendations based on knee and elbow angles.
-    """
+def get_feedback(knee_angle, arm_avg):
     feedback_lines = []
-    saddle_adj = { 'value': 0, 'direction': 'ok' }
-    elbow_adj = { 'value': 0, 'direction': 'ok' }
-
-    # Knee Angle / Saddle Height Logic
-    if knee_angle > 0: # Only analyze if valid
-        if knee_angle < 25:
-            feedback_lines.append("Knee angle too small (<25°). Saddle is likely too LOW.")
-            saddle_adj['value'] = (30 - knee_angle) * 0.2
-            saddle_adj['direction'] = "HIGHER"
-        elif knee_angle > 40:
-            feedback_lines.append("Knee angle too large (>40°). Saddle is likely too HIGH.")
-            saddle_adj['value'] = (knee_angle - 35) * 0.2
-            saddle_adj['direction'] = "LOWER"
-        else:
-            feedback_lines.append("Knee angle is optimal (25°-40°).")
-
-    # Elbow Angle / Handlebar Height Logic
-    if elbow_angle > 0:
-        if elbow_angle < 90: 
-            feedback_lines.append("Elbow angle too acute (<90°). Bars too LOW/CLOSE.")
-            elbow_adj['value'] = (90 - elbow_angle) * 0.1
-            elbow_adj['direction'] = "HIGHER/FURTHER"
-        elif elbow_angle > 120: 
-            feedback_lines.append("Elbow angle too open (>120°). Bars too HIGH/FAR.")
-            elbow_adj['value'] = (elbow_angle - 120) * 0.1
-            elbow_adj['direction'] = "LOWER/CLOSER"
-        else:
-            feedback_lines.append("Elbow angle is optimal (90°-120°).")
-
-    return feedback_lines, saddle_adj, elbow_adj
+    if knee_angle > 0:
+        if knee_angle < 140: feedback_lines.append(f"Knee Extension low ({knee_angle:.0f}°). Raise Saddle.")
+        elif knee_angle > 150: feedback_lines.append(f"Knee Extension high ({knee_angle:.0f}°). Lower Saddle.")
+    return feedback_lines, {}, {}
