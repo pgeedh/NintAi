@@ -1,0 +1,11 @@
+opencv-python
+mediapipe
+numpy
+pandas
+openpyxl
+ultralytics
+fpdf
+seaborn
+matplotlib
+google-generativeai
+python-dotenv
