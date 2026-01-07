@@ -5,7 +5,7 @@
 ![Gemini 3](https://img.shields.io/badge/AI-Google%20Gemini%203-blue)
 ![OpenCV](https://img.shields.io/badge/OpenCV-Computer%20Vision-green)
 
-**NintAi** is a professional-grade bio-mechanical analysis tool that turns your computer into a high-end bike fitting studio. Inspired by industry leaders like *MyVeloFit*, NintAi uses **YOLOv8** for tracking and **Google Gemini 3 (AI)** to provide expert-level written reports.
+**NintAi** is a professional-grade bio-mechanical analysis tool that turns your computer into a high-end bike fitting studio. Inspired by industry leaders like *MyVeloFit*, NintAi uses **YOLOv11** for tracking and **Google Gemini 3 (AI)** to provide expert-level written reports.
 
 ---
 
