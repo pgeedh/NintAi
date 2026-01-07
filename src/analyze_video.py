@@ -37,8 +37,8 @@ def main():
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')
         out = cv2.VideoWriter(args.output_video, fourcc, fps, (width, height))
 
-    print("Initializing YOLOv8 Tracking...")
-    detector = tracking.PoseDetector()
+    print("Initializing YOLO11 Tracking...")
+    detector = tracking.PoseDetector(model_path='yolo11n-pose.pt')
 
     data = {'frame': [], 'time': [], 'knee': [], 'hip': [], 'elbow': []}
     
@@ -66,10 +66,27 @@ def main():
                 hip = angles['hip']
                 elbow = angles['elbow']
 
-                # Draw Visuals (Simple Skeleton)
+                # Draw Visuals (Enhanced Skeleton)
+                skeleton = [
+                    ('shoulder', 'elbow'), ('elbow', 'wrist'), 
+                    ('shoulder', 'hip'), ('hip', 'knee'), 
+                    ('knee', 'ankle'), ('ankle', 'foot')
+                ]
+                
+                # Draw Lines
+                for p1, p2 in skeleton:
+                    if p1 in lm_dict and p2 in lm_dict:
+                        pt1 = (int(lm_dict[p1][0]), int(lm_dict[p1][1]))
+                        pt2 = (int(lm_dict[p2][0]), int(lm_dict[p2][1]))
+                        if pt1 != (0,0) and pt2 != (0,0):
+                            cv2.line(frame, pt1, pt2, (0, 255, 255), 4, cv2.LINE_AA)
+                            cv2.line(frame, pt1, pt2, (255, 100, 0), 2, cv2.LINE_AA)
+
+                # Draw Keypoints
                 for k, v in lm_dict.items():
                     if v[0] != 0:
-                        cv2.circle(frame, (int(v[0]), int(v[1])), 5, (0, 255, 255), -1)
+                        cv2.circle(frame, (int(v[0]), int(v[1])), 6, (255, 255, 255), -1, cv2.LINE_AA)
+                        cv2.circle(frame, (int(v[0]), int(v[1])), 4, (0, 0, 255), -1, cv2.LINE_AA)
 
         # Store Data
         data['frame'].append(frame_count)
@@ -134,6 +151,7 @@ def main():
                 print("  - Gemini API Key provided. Detailed report generated.")
 
             print(f"Generating PDF report to {report_path}...")
+            # Use fallback image logic not feasible for video unless we saved a frame
             report.generate_report("none", angles_summary, recommendations, report_path, ai_text)
         else:
             print("No valid pose data collected.")

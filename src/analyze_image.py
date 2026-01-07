@@ -160,7 +160,9 @@ def main():
     
     print(f"Generating PDF report to {report_path}...")
     try:
-        report.generate_report(args.input, angles, full_recs, report_path, ai_text)
+        # BUG FIX: Use the annotated OUTPUT image (JPG) if available, to avoid WebP errors in PDF
+        img_source = args.output if args.output else args.input
+        report.generate_report(img_source, angles, full_recs, report_path, ai_text)
     except Exception as e:
         print(f"Warning: PDF generation failed. {e}")
 

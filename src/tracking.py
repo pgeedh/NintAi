@@ -1,64 +1,70 @@
 from ultralytics import YOLO
-import numpy as np
+import cv2
 
 class PoseDetector:
-    def __init__(self, model_path='yolov8n-pose.pt'):
+    def __init__(self, model_path='yolo11n-pose.pt'):
         """
-        Initializes the YOLOv8 Pose Detector.
+        Initializes the YOLO11 Pose model.
+        Args:
+            model_path (str): Path to the YOLO11 pose model. 
+                              Defaults to 'yolo11n-pose.pt' (Nano) for speed.
+                              Requires 'pip install ultralytics'
         """
         self.model = YOLO(model_path)
-    
+
     def predict(self, image):
         """
-        Runs inference on the image and returns keypoints.
+        Runs YOLO11 pose estimation on the frame.
         """
         results = self.model(image, verbose=False)
-        return results[0]
+        return results[0] if results else None
 
     def get_landmarks_dict(self, results, image_shape):
         """
-        Extracts landmarks from YOLO results and maps them to NintAi standard names.
-        YOLOv8 (COCO) Keypoints Mapping:
-        5: Left Shoulder, 6: Right Shoulder
-        7: Left Elbow, 8: Right Elbow
-        9: Left Wrist, 10: Right Wrist
-        11: Left Hip, 12: Right Hip
-        13: Left Knee, 14: Right Knee
-        15: Left Ankle, 16: Right Ankle
+        Extracts keypoints and normalizes them into a dictionary format compatible with NintAi's core.
+        YOLOv8/11 COCO Keypoints:
+        0: Nose, 1: Eye, ..., 5: Shoulder, 7: Elbow, 9: Wrist, 11: Hip, 13: Knee, 15: Ankle
+        (Left side odd, Right side even... logic handles mainly left side fit for now)
         """
-        if not results.keypoints or len(results.keypoints) == 0:
-            return None
+        h, w = image_shape[:2]
+        lm_dict = {}
+        
+        if results.keypoints is None or len(results.keypoints) == 0:
+            return lm_dict
 
-        # Take the first detected person
-        kp = results.keypoints.xy[0].cpu().numpy() # Shape: (17, 2)
+        # Assuming single person - take the FIRST detection
+        # data format: [x, y, conf]
+        kpts = results.keypoints.data[0].cpu().numpy()
         
-        # Helper to get point - logic for Left vs Right side?
-        # Ideally we detect which side of the bike the user is facing.
-        # For simplicity, we assume LEFT side view (standard bike fit view) or try to detect visibility.
-        # Let's assume LEFT side for now (odd indices in COCO usually? No, check mapping).
-        # COCO: 5=L_Shoulder, 11=L_Hip, 13=L_Knee, 15=L_Ankle.
-        # This matches a rider facing LEFT (camera sees their left side).
+        # Mapping COCO keypoint indices to NintAi names
+        # Assuming cyclist is facing left (showing left side) -> using odd indices
+        # If confidence is low, could check right side? For now strict left logic.
         
-        # TODO: Add logic to auto-switch to Right side if confidence is higher?
-        
-        def get_pt(idx):
-            return kp[idx]
-
         mapping = {
-            'shoulder': get_pt(5),
-            'hip': get_pt(11),
-            'knee': get_pt(13),
-            'ankle': get_pt(15),
-            'elbow': get_pt(7),
-            'wrist': get_pt(9),
-            # Foot is not in standard COCO keypoints (17 points). 
-            # We might need to estimate it or drop Ankling Range for YOLO 
-            # OR use Ankle + some heuristic. 
-            # For now, let's omit 'foot' or map it to ankle (which kills the angle).
-            # Let's mock foot as just below ankle for now to strictly avoid crash, 
-            # but really we should remove ankling range if we don't have foot tip.
-            # actually, using Ankle for now.
-            'foot': get_pt(15) 
+            5: 'shoulder',  # Left Shoulder
+            7: 'elbow',     # Left Elbow
+            9: 'wrist',     # Left Wrist
+            11: 'hip',      # Left Hip
+            13: 'knee',     # Left Knee
+            15: 'ankle'     # Left Ankle
         }
         
-        return mapping
+        # Heuristic for 'foot':
+        # YOLO doesn't have a 'toe' or 'metatarsal' point. 
+        # We can approximate 'foot' by extending line from knee->ankle? 
+        # Or just use Ankle for now.
+        # NintAi core uses 'foot' for ankling. 
+        # Let's map 'foot' to 'ankle' (index 15) for safety so it doesn't crash, 
+        # but ankling logic will be 0.
+        
+        for idx, name in mapping.items():
+            if idx < len(kpts):
+                x, y, conf = kpts[idx]
+                if conf > 0.3: # Threshold
+                    lm_dict[name] = [x, y]
+        
+        # Add 'foot' as ankle copy if ankle exists
+        if 'ankle' in lm_dict:
+            lm_dict['foot'] = lm_dict['ankle']
+
+        return lm_dict
